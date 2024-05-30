@@ -1,0 +1,14 @@
+CREATE TABLE discount_products (
+    id SERIAL PRIMARY KEY,
+    description TEXT,
+    shop_id INT REFERENCES shops(shop_id) ON DELETE CASCADE,
+    product_id INT REFERENCES products(product_id) ON DELETE CASCADE,
+    discount_id INT REFERENCES discounts(discount_id) ON DELETE CASCADE,
+    discount_amount DECIMAL(10, 2) NOT NULL,
+    start_date DATE NOT NULL,
+    end_date DATE NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    created_by VARCHAR(50),
+    updated_by VARCHAR(50)
+);
