@@ -1,0 +1,10 @@
+CREATE TABLE stocks (
+    stock_id SERIAL PRIMARY KEY,
+    product_id INT REFERENCES products(product_id) ON DELETE CASCADE,
+    quantity DECIMAL(10, 2) NOT NULL,
+    unit VARCHAR(50) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    created_by VARCHAR(50),
+    updated_by VARCHAR(50)
+);
