@@ -1,17 +1,14 @@
-# Use the official Rust image as the base image
+# Use a Rust base image
 FROM rust:latest
 
 # Set the working directory inside the container
-WORKDIR /usr/src/app
+WORKDIR /usr/src/weed_vibe
 
-# Copy the Cargo.toml and Cargo.lock files to the working directory
-COPY Cargo.toml Cargo.lock ./
-
-# Copy the entire project directory to the working directory
+# Copy the project files to the container
 COPY . .
 
-# Build the Rust project
+# Build your application
 RUN cargo build --release
 
-# Set the startup command for the container
-CMD ["./target/release/weedvibe"]
+# Set the startup command
+CMD ["./target/release/weed_vibe"]

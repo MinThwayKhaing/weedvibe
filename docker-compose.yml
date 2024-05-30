@@ -3,23 +3,10 @@ version: "3.8"
 services:
   web:
     restart: always
-    image: minthwaykhaing/weedvibe
+    build: .
     ports:
       - "8000:8080"
     environment:
       - "DB_CONNECTION=host=192.168.1.58:5432 user=postgres password=root dbname=weedvibe"
-      # Add additional environment variables here as needed
     volumes:
       - ./images:/images
-    # Uncomment and configure if your Rust app depends on a database service
-    # depends_on:
-    #   - db
-# Example database service definition
-# db:
-#   image: postgres:latest
-#   environment:
-#     - POSTGRES_USER=postgres
-#     - POSTGRES_PASSWORD=root
-#     - POSTGRES_DB=weedvibe
-#   ports:
-#     - "5432:5432"
