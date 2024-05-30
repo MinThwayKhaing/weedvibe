@@ -1,6 +1,7 @@
 CREATE TABLE discounts (
     discount_id SERIAL PRIMARY KEY,
     discount_type VARCHAR(50) NOT NULL, -- e.g., 'percentage', 'fixed'
+    discount_amount DECIMAL(10, 2) NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     created_by VARCHAR(50),
