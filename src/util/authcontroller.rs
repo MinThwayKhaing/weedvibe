@@ -2,13 +2,13 @@ use crate::routes::AppState;
 use actix_web::{web, HttpResponse, Responder, ResponseError};
 use bcrypt::{verify, BcryptError};
 use chrono::{DateTime, Duration, Utc};
+use jsonwebtoken::{decode, errors::Result as JwtResult, Algorithm, DecodingKey, Validation};
 use jsonwebtoken::{encode, EncodingKey, Header};
 use rand::{distributions::Alphanumeric, Rng};
 use serde::{Deserialize, Serialize};
 use sqlx::{Error as SqlxError, PgPool};
-use thiserror::Error;
-use uuid::Uuid;
 
+use uuid::Uuid;
 #[derive(Debug, Deserialize)]
 pub struct LoginRequest {
     pub email: String,
@@ -27,7 +27,13 @@ struct Tokens {
     refresh_token: String,
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug, Deserialize)]
+struct JwtClaims {
+    sub: String,
+    exp: usize,
+    // include any other claims you're interested in
+}
+#[derive(Debug, thiserror::Error)]
 pub enum AuthError {
     #[error("Database error: {0}")]
     DatabaseError(#[from] SqlxError),
@@ -96,6 +102,36 @@ pub async fn authenticate(
     } else {
         log::debug!("Password did not match for user: {}", user.id);
         Ok(None)
+    }
+}
+pub async fn validate_token(
+    data: web::Data<AppState>,
+    email: web::Path<String>,
+    token: String,
+) -> Result<(), actix_web::Error> {
+    let pool: &PgPool = &data.db_pool;
+
+    let result = sqlx::query!("SELECT token FROM auth_tokens WHERE user_id = (SELECT id FROM users WHERE email = $1) ORDER BY expires_at DESC LIMIT 1", email.into_inner())
+        .fetch_optional(pool)
+        .await;
+
+    match result {
+        Ok(Some(row)) => {
+            let db_token: String = row.token;
+
+            if db_token == token {
+                Ok(()) // Token is valid
+            } else {
+                Err(actix_web::error::ErrorUnauthorized("Invalid token"))
+            }
+        }
+        Ok(None) => Err(actix_web::error::ErrorUnauthorized(
+            "No token found for the user",
+        )),
+        Err(e) => Err(actix_web::error::ErrorInternalServerError(format!(
+            "Failed to fetch data: {}",
+            e
+        ))),
     }
 }
 

@@ -1,15 +1,49 @@
-use crate::{routes::AppState, user::models::User};
+use crate::{routes::AppState, user::models::User, util::authcontroller::validate_token};
 
 use super::models::CreateUser;
 use crate::util::authcontroller::AuthError;
 
-use actix_web::{web, HttpResponse, Responder, ResponseError};
+use actix_web::{web, HttpRequest, HttpResponse, Responder, ResponseError};
 
 use bcrypt::{hash, DEFAULT_COST};
+use jsonwebtoken::{decode, DecodingKey, Validation};
+use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
-
-pub async fn create_user(data: web::Data<AppState>, user: web::Json<CreateUser>) -> impl Responder {
+#[derive(Debug, Serialize, Deserialize)]
+struct Claims {
+    sub: String,
+    exp: usize,
+}
+pub async fn create_user(
+    data: web::Data<AppState>,
+    req: HttpRequest,
+    user: web::Json<CreateUser>,
+) -> impl Responder {
     let pool = &data.db_pool;
+    let auth_header = req
+        .headers()
+        .get("Authorization")
+        .and_then(|val| val.to_str().ok())
+        .unwrap_or("");
+
+    if !auth_header.starts_with("Bearer ") {
+        return HttpResponse::Unauthorized().body("No Bearer token");
+    }
+
+    let token = &auth_header[7..];
+    let email = &user.email; // Extract the email from web::Json
+
+    if validate_token(
+        data.clone(),
+        web::Path::from(email.clone()),
+        token.to_string(),
+    )
+    .await
+    .is_err()
+    {
+        return HttpResponse::Unauthorized().body("Invalid token"); // Invalid token
+    }
+
     let hashed_password = match hash(&user.password, DEFAULT_COST) {
         Ok(hp) => hp,
         Err(e) => return AuthError::PasswordError(e).error_response(),
