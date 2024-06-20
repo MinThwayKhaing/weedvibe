@@ -1,13 +1,15 @@
 use crate::routes::AppState;
-use actix_web::{web, HttpResponse, Responder, ResponseError};
+use actix_session::Session;
+use actix_web::{web, Error as ActixError, HttpResponse, Responder, ResponseError};
 use bcrypt::{verify, BcryptError};
 use chrono::{DateTime, Duration, Utc};
+use jsonwebtoken::errors::ErrorKind;
 use jsonwebtoken::{decode, errors::Result as JwtResult, Algorithm, DecodingKey, Validation};
 use jsonwebtoken::{encode, EncodingKey, Header};
 use rand::{distributions::Alphanumeric, Rng};
 use serde::{Deserialize, Serialize};
 use sqlx::{Error as SqlxError, PgPool};
-
+use std::env;
 use uuid::Uuid;
 #[derive(Debug, Deserialize)]
 pub struct LoginRequest {
@@ -104,35 +106,54 @@ pub async fn authenticate(
         Ok(None)
     }
 }
-pub async fn validate_token(
-    data: web::Data<AppState>,
-    email: web::Path<String>,
-    token: String,
-) -> Result<(), actix_web::Error> {
-    let pool: &PgPool = &data.db_pool;
 
-    let result = sqlx::query!("SELECT token FROM auth_tokens WHERE user_id = (SELECT id FROM users WHERE email = $1) ORDER BY expires_at DESC LIMIT 1", email.into_inner())
-        .fetch_optional(pool)
-        .await;
+pub async fn validate_token(token: &str) -> Result<(), ActixError> {
+    // Verify the access token
+    let secret_key = env::var("JWT_SECRET_KEY").expect("JWT_SECRET_KEY must be set");
+    let validation = Validation::new(Algorithm::HS256);
 
-    match result {
-        Ok(Some(row)) => {
-            let db_token: String = row.token;
-
-            if db_token == token {
-                Ok(()) // Token is valid
-            } else {
-                Err(actix_web::error::ErrorUnauthorized("Invalid token"))
+    let token_data = match decode::<Claims>(
+        token,
+        &DecodingKey::from_secret(secret_key.as_ref()),
+        &validation,
+    ) {
+        Ok(data) => data,
+        Err(err) => match *err.kind() {
+            ErrorKind::InvalidToken => {
+                log::warn!("Token is invalid");
+                return Err(actix_web::error::ErrorUnauthorized("Token is invalid"));
             }
-        }
-        Ok(None) => Err(actix_web::error::ErrorUnauthorized(
-            "No token found for the user",
-        )),
-        Err(e) => Err(actix_web::error::ErrorInternalServerError(format!(
-            "Failed to fetch data: {}",
-            e
-        ))),
+            ErrorKind::ExpiredSignature => {
+                log::warn!("Token has expired");
+                return Err(actix_web::error::ErrorUnauthorized("Token has expired"));
+            }
+            _ => {
+                log::warn!("Token error: {:?}", err);
+                return Err(actix_web::error::ErrorUnauthorized(
+                    "Token validation error",
+                ));
+            }
+        },
+    };
+
+    // Extract the expiration time from the token
+    let expiration_timestamp = token_data.claims.exp as i64;
+    let expiration_time = DateTime::<Utc>::from_utc(
+        chrono::NaiveDateTime::from_timestamp(expiration_timestamp, 0),
+        Utc,
+    );
+
+    // Check if access token has expired
+    if Utc::now() > expiration_time {
+        log::warn!("Access token has expired");
+        return Err(actix_web::error::ErrorUnauthorized(
+            "Access token has expired",
+        ));
     }
+
+    // Log successful token validation
+    log::info!("Token validation successful");
+    Ok(())
 }
 
 pub async fn login(
@@ -142,40 +163,29 @@ pub async fn login(
     let email = login_req.email.clone();
     let password = login_req.password.clone();
 
+    let jwt_expiration_minutes: i64 = env::var("JWT_EXPIRATION_MINUTES")
+        .expect("JWT_EXPIRATION_MINUTES must be set")
+        .parse()
+        .expect("JWT_EXPIRATION_MINUTES must be a number");
+
+    // let refresh_token_expiration_days: i64 = env::var("REFRESH_TOKEN_EXPIRATION_DAYS")
+    //     .expect("REFRESH_TOKEN_EXPIRATION_DAYS must be set")
+    //     .parse()
+    //     .expect("REFRESH_TOKEN_EXPIRATION_DAYS must be a number");
+
     log::info!("Login attempt for email: {}", email);
 
-    // Validate user credentials
     let user = authenticate(&pool.db_pool, &email, &password).await;
     match user {
         Ok(Some(user)) => {
             log::info!("User authenticated: {}", user.id);
 
-            // Generate JWT tokens
-            let access_token = generate_access_token(&user);
+            let access_token = generate_access_token(&user, jwt_expiration_minutes);
             let refresh_token = generate_refresh_token();
             let refresh_token_str = refresh_token.to_string();
-            let expiration_time = Utc::now() + Duration::days(30); // 30 days expiration time
-
-            // Save tokens in the database
-            if let Err(e) =
-                save_refresh_token(&pool.db_pool, &refresh_token, &user.id, &expiration_time).await
-            {
-                log::error!("Failed to save refresh token: {}", e);
-                return e.error_response();
-            }
-            if let Err(e) = save_auth_token(
-                &pool.db_pool,
-                &access_token,
-                &user.id,
-                &(Utc::now() + Duration::hours(1)),
-            )
-            .await
-            {
-                log::error!("Failed to save auth token: {}", e);
-                return e.error_response();
-            }
-
-            // Respond with tokens
+            // let access_expiration_time = Utc::now() + Duration::minutes(jwt_expiration_minutes);
+            // let refresh_expiration_time =
+            //     Utc::now() + Duration::days(refresh_token_expiration_days);
             HttpResponse::Ok().json(Tokens {
                 access_token,
                 refresh_token: refresh_token_str,
@@ -192,68 +202,22 @@ pub async fn login(
     }
 }
 
-fn generate_access_token(user: &User) -> String {
-    let expiration_time = Utc::now() + Duration::hours(1); // Token expires in 1 hour
+fn generate_access_token(user: &User, expiration_minutes: i64) -> String {
+    let expiration_time = Utc::now() + Duration::minutes(expiration_minutes);
     let claims = Claims {
         sub: user.id.to_string(),
         exp: expiration_time.timestamp() as usize,
     };
-    let mut rng = rand::thread_rng();
-    let secret_key: String = (0..32)
-        .map(|_| rng.sample(Alphanumeric) as char) // Convert u8 to char
-        .collect();
+    let secret_key = env::var("JWT_SECRET_KEY").expect("JWT_SECRET_KEY must be set");
+
     encode(
         &Header::default(),
         &claims,
-        &EncodingKey::from_secret(secret_key.as_ref()), // Replace with your secret key
+        &EncodingKey::from_secret(secret_key.as_ref()),
     )
     .expect("Token encoding failed")
 }
 
 fn generate_refresh_token() -> Uuid {
     Uuid::new_v4()
-}
-
-async fn save_refresh_token(
-    pool: &PgPool,
-    refresh_token: &Uuid,
-    user_id: &Uuid,
-    expires_at: &chrono::DateTime<Utc>,
-) -> Result<(), AuthError> {
-    log::debug!("Saving refresh token for user: {}", user_id);
-    sqlx::query!(
-        r#"
-        INSERT INTO refresh_tokens (token, expires_at, user_id)
-        VALUES ($1, $2, $3)
-        "#,
-        refresh_token,
-        expires_at,
-        user_id
-    )
-    .execute(pool)
-    .await
-    .map_err(|e| AuthError::DatabaseError(e.into()))?;
-    Ok(())
-}
-
-async fn save_auth_token(
-    pool: &PgPool,
-    access_token: &str,
-    user_id: &Uuid,
-    expires_at: &chrono::DateTime<Utc>,
-) -> Result<(), AuthError> {
-    log::debug!("Saving auth token for user: {}", user_id);
-    sqlx::query!(
-        r#"
-        INSERT INTO auth_tokens (token, expires_at, user_id)
-        VALUES ($1, $2, $3)
-        "#,
-        access_token,
-        expires_at,
-        user_id
-    )
-    .execute(pool)
-    .await
-    .map_err(|e| AuthError::DatabaseError(e.into()))?;
-    Ok(())
 }

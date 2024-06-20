@@ -1,7 +1,8 @@
+use actix_session::SessionMiddleware;
 use actix_web::{web, App, HttpServer};
 use dotenv::dotenv;
 use env_logger::Env;
-use log::{debug, error, info};
+use log::{error, info};
 use sqlx::postgres::PgPoolOptions;
 use std::env;
 mod routes;
@@ -28,7 +29,6 @@ async fn main() -> std::io::Result<()> {
             std::process::exit(1);
         }
     };
-
     HttpServer::new(move || {
         App::new()
             .app_data(web::Data::new(routes::AppState {
